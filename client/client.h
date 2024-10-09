@@ -16,6 +16,7 @@ public:
     ~Client() { close(_sockfd); }
 
     bool send_file(const std::string& file_path);
+    bool send_multiple_files(const std::vector<std::string>& filenames);
     static std::string get_local_ip();
 
 private:

@@ -1,11 +1,13 @@
 #include "client.h"
 
+#include <cstdint>
 #include <random>
 #include <algorithm>
 #include <poll.h>
 #include <iostream>
 
 #include <netdb.h>
+#include <unordered_map>
 
 Client::Client() : _server_ip(get_local_ip())
 {
@@ -64,10 +66,12 @@ bool Client::send_file(const std::string& file_path)
         ++attempt;
         index = index < shuffled_packages.size() - 1 ? index + 1 : 0;
 
-        send_package(shuffled_packages[index]);
+        const auto& to_send = shuffled_packages[index];
+
+        send_package(to_send);
         const auto& package = receive_ack();
 
-        if (!package.has_value() || package->type() != ACK || package->seq_number() != shuffled_packages[index].seq_number()) {
+        if (!package.has_value() || package->type() != ACK || package->seq_number() != to_send.seq_number()) {
             if (!check_attempt(attempt, index, file_path)) {
                 break;
             }
@@ -83,9 +87,65 @@ bool Client::send_file(const std::string& file_path)
     return false;
 }
 
+bool Client::send_multiple_files(const std::vector<std::string>& filenames)
+{
+    std::vector<std::vector<Package>> files_packages;
+    std::vector<Package> shuffled_files_packages;
+
+    for (const auto& filename : filenames) {
+        files_packages.push_back(create_packages(filename));
+    }
+
+    std::unordered_map<std::string, uint32_t> id_to_checksums;
+    id_to_checksums.reserve(files_packages.size());
+
+    for (const auto& packages : files_packages) {
+        id_to_checksums[packages.front().id()] = Package::calculate_checksum(packages);
+        std::copy(packages.begin(), packages.end(), std::back_inserter(shuffled_files_packages));
+    }
+
+    shuffled_files_packages = shuffle_and_duplicate(shuffled_files_packages);
+
+    size_t attempt = 0;
+    size_t index = 0;
+
+    while(!id_to_checksums.empty()) {
+        ++attempt;
+        index = index < shuffled_files_packages.size() - 1 ? index + 1 : 0;
+
+        const auto& to_send = shuffled_files_packages[index];
+
+        send_package(to_send);
+        const auto& package = receive_ack();
+
+        if (!package.has_value() || package->type() != ACK || package->seq_number() != to_send.seq_number()) {
+            if (!check_attempt(attempt, index, package->id())) {
+                break;
+            }
+            continue;
+        }
+
+        if (package->seq_total() == to_send.seq_total()) {
+            bool result = check_final_ack(id_to_checksums[package->id()], package.value());
+            if (result) {
+                std::cout << "File has been delivered" << std::endl;
+            } else {
+                 std::cout << "File has not been delivered" << std::endl;
+            }
+            id_to_checksums.erase(package->id());
+        }
+
+        attempt = 0;
+    }
+
+    return true;
+}
+
 
 std::vector<Package> Client::create_packages(const std::string& file_path)
 {
+    int id = std::rand() % std::numeric_limits<int>::max();
+
     std::ifstream file(file_path, std::ios::binary | std::ios::ate);
 
     if (!file) {
@@ -97,11 +157,13 @@ std::vector<Package> Client::create_packages(const std::string& file_path)
     file.seekg(0, std::ios::beg);
     int total_packages = (file_size + settings::data_size - 1) / settings::data_size;
     std::vector<Package> packages(total_packages);
+
     char file_id[8] = {0};
+    memset(&file_id, 0, sizeof(file_id));
+    memcpy(file_id, &id, sizeof(int));
 
     for (int i = 0; i < total_packages; ++i) {
-        char buffer[settings::data_size];
-        memset(buffer, '\0', settings::data_size);
+        char buffer[settings::data_size] = {0};
         file.read(buffer, settings::data_size);
         packages[i].fill_package(i, total_packages, PUT, file_id, buffer, file.gcount());
     }
@@ -153,12 +215,12 @@ std::optional<Package> Client::receive_ack()
         return std::nullopt;
     }
 
-        int bytes_received = recvfrom(_sockfd, ack_buffer, settings::package_size, 0, (sockaddr*)&_server_addr, &addr_len);
-        if (bytes_received > 0) {
-            Package ack_package;
-            std::memcpy(&ack_package, ack_buffer, sizeof(ack_package));
-            return ack_package;
-        }
+    int bytes_received = recvfrom(_sockfd, ack_buffer, settings::package_size, 0, (sockaddr*)&_server_addr, &addr_len);
+    if (bytes_received > 0) {
+        Package ack_package;
+        std::memcpy(&ack_package, ack_buffer, sizeof(ack_package));
+        return ack_package;
+    }
 
     return std::nullopt;
 }
@@ -216,6 +278,10 @@ int main(int argc, char *argv[]) {
             std::cout << "Failed to sent file " << filename << std::endl;
         }
     }
+
+    //try send multiple files
+
+    client.send_multiple_files(filenames);
 
     return 0;
 }
