@@ -20,6 +20,7 @@ public:
     ~Server() { close(_sockfd); }
 
     void run();
+    bool is_valid() { return _error == 0; }
 
 private:
     bool process_package(const Package& package, std::optional<uint32_t>&);
@@ -30,6 +31,8 @@ private:
     int _sockfd;
     sockaddr_in _server_addr{};
     sockaddr_in client_addr{};
+
+    int _error = 1;
 
     std::unordered_map<std::string, std::map<uint32_t, Package>> _files;
     std::unordered_map<std::string, uint32_t> _packages_count;

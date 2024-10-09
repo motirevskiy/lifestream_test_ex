@@ -1,11 +1,13 @@
 #include "client.h"
-#include <cstring>
 
-#include <optional>
 #include <random>
 #include <algorithm>
+#include <poll.h>
+#include <iostream>
 
-Client::Client(const std::string& ip) : _server_ip(ip)
+#include <netdb.h>
+
+Client::Client() : _server_ip(get_local_ip())
 {
     _sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     _server_addr.sin_family = AF_INET;
@@ -13,9 +15,28 @@ Client::Client(const std::string& ip) : _server_ip(ip)
     inet_pton(AF_INET, _server_ip.c_str(), &_server_addr.sin_addr);
 }
 
+std::string Client::get_local_ip() {
+    char hostbuffer[256];
+    char *IPbuffer;
+    struct hostent *host_entry;
+
+    if (gethostname(hostbuffer, sizeof(hostbuffer)) == -1) {
+        return "";
+    }
+
+    host_entry = gethostbyname(hostbuffer);
+    if (!host_entry) {
+        return "";
+    }
+
+    IPbuffer = inet_ntoa(*((struct in_addr*) host_entry->h_addr_list[0]));
+
+    return std::string(IPbuffer);
+}
+
 bool Client::check_attempt(size_t attempt, size_t package_index, std::string filename)
 {
-    std::cout << "packages[" << package_index << "] " << "of file" << filename << " has not been delivered" << std::endl;
+    std::cout << "packages[" << package_index << "] " << "of file " << filename << " has not been delivered" << std::endl;
 
     if (attempt > settings::attempts_count) {
         std::cout << "the server didn't respond" << std::endl;
@@ -28,6 +49,11 @@ bool Client::check_attempt(size_t attempt, size_t package_index, std::string fil
 bool Client::send_file(const std::string& file_path)
 {
     const auto& source_packages = create_packages(file_path);
+
+    if (source_packages.empty()) {
+        return false;
+    }
+
     const auto& shuffled_packages = shuffle_and_duplicate(source_packages);
 
     const uint32_t local_checksum = Package::calculate_checksum(source_packages);
@@ -122,7 +148,7 @@ std::optional<Package> Client::receive_ack()
     char ack_buffer[settings::package_size];
     socklen_t addr_len = sizeof(_server_addr);
 
-    pollfd pfd = {.fd = _sockfd, .events = POLLIN};
+    pollfd pfd = {.fd = _sockfd, .events = POLLIN, .revents = POLLNVAL };
     if (poll(&pfd, 1, settings::timeout) <= 0) {
         return std::nullopt;
     }
@@ -145,23 +171,51 @@ bool Client::check_final_ack(const uint32_t& local_checksum, const Package& ack_
     return local_checksum == server_checksum;
 }
 
+std::vector<std::string> get_filenames(const std::string& filename) {
+    std::vector<std::string> filenames;
+    std::ifstream file_list(filename);
+    
+    if (!file_list) {
+        std::cerr << "Could not open file list: " << filename << std::endl;
+        return filenames;
+    }
+
+    std::string file;
+    while (std::getline(file_list, file)) {
+        if (!file.empty()) {
+            filenames.push_back(file);
+        }
+    }
+
+    file_list.close();
+    return filenames;
+}
+
 int main(int argc, char *argv[]) {
-    if (argc != 3) {
-        std::cerr << "Usage: " << argv[0] << " <server_ip> <file_path to filenames file>\n";
+
+    if (argc != 2) {
+        std::cerr << "Usage: " << argv[0] << " <file_path to filenames file>\n";
         return 1;
     }
 
-    const char* server_ip = argv[1];
-    const char* file_path = argv[2];
+    const char* file_path = argv[1];
 
-    Client client(server_ip);
-    bool result = client.send_file(file_path);
-
-    if (result) {
-        std::cout << "File sent successfully" << std::endl;
-    } else {
-        std::cout << "Checksums mismatch" << std::endl;
+    const auto& filenames = get_filenames(file_path);
+    if (filenames.empty()) {
+        return 0;
     }
 
-    return result;
+    Client client{};
+
+    for (const auto& filename : filenames) {
+        bool result = client.send_file(filename);
+
+        if (result) {
+            std::cout << "File " << filename << " sent successfully" << std::endl;
+        } else {
+            std::cout << "Failed to sent file " << filename << std::endl;
+        }
+    }
+
+    return 0;
 }

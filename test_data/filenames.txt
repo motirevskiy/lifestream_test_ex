@@ -1,0 +1,3 @@
+client/test_data/pdf_test.pdf
+client/test_data/screenshot.png
+client/test_data/test_1.txt

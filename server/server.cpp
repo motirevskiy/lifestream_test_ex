@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <map>
@@ -14,7 +15,7 @@ Server::Server()
     _server_addr.sin_family = AF_INET;
     _server_addr.sin_port = htons(settings::PORT);
     _server_addr.sin_addr.s_addr = INADDR_ANY;
-    bind(_sockfd, (sockaddr*)&_server_addr, sizeof(_server_addr));
+    _error = bind(_sockfd, (sockaddr*)&_server_addr, sizeof(_server_addr));
 }
 
 bool Server::process_package(const Package& package, std::optional<uint32_t>& checksum)
@@ -46,7 +47,7 @@ void Server::run()
 
     while (true) {
 
-        pollfd pfd = {.fd = _sockfd, .events = POLLIN};
+        pollfd pfd = {.fd = _sockfd, .events = POLLIN, .revents = POLLNVAL };
         if (poll(&pfd, 1, settings::timeout) <= 0) { // to avoid blocking
             continue;
         }
@@ -81,9 +82,11 @@ void Server::send_ack(uint32_t seq_number, uint32_t seq_total, const char* file_
     sendto(_sockfd, &ack, sizeof(ack), 0, (sockaddr*)&client_addr, sizeof(client_addr));
 }
 
-void Server::save_file(const std::map<uint32_t, Package>& packages) //TODO: remove
+void Server::save_file(const std::map<uint32_t, Package>& packages)
 {
-    static constexpr std::string_view file_name = "file.bin";
+    return;
+    static size_t index = 0;
+    const std::string file_name = "file_" + std::to_string(++index);
 
     std::ofstream out_file(std::data(file_name), std::ios::binary);
     for (const auto& [_, package] : packages) {
@@ -96,6 +99,10 @@ void Server::save_file(const std::map<uint32_t, Package>& packages) //TODO: remo
 int main()
 {
     Server server{};
+    if (!server.is_valid()) {
+        return 1;
+    }
+
     server.run();
 
     return 0;
