@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <poll.h>
 #include <iostream>
+#include <thread>
+#include <chrono>
 
 #include <netdb.h>
 #include <unordered_map>
@@ -51,24 +53,33 @@ bool Client::check_attempt(size_t attempt, size_t package_index, std::string fil
 bool Client::send_file(const std::string& file_path)
 {
     const auto& source_packages = create_packages(file_path);
-
     if (source_packages.empty()) {
         return false;
     }
 
     const auto& shuffled_packages = shuffle_and_duplicate(source_packages);
-
     const uint32_t local_checksum = Package::calculate_checksum(source_packages);
-    size_t attempt = 0;
 
+    size_t attempt = 0;
     size_t index = 0;
+
+    // Setting the desired bitrate in bits per second
+    const int target_bitrate = 1000000; // 1 Mbit/s
+    const size_t packet_size = settings::data_size * 8; // Packet size in bits
+
+    // Calculating the waiting time between sending packets
+    double wait_time = static_cast<double>(packet_size) / target_bitrate;
+
     while (true) {
         ++attempt;
         index = index < shuffled_packages.size() - 1 ? index + 1 : 0;
 
         const auto& to_send = shuffled_packages[index];
-
         send_package(to_send);
+
+        // We use the delay to control the bitrate
+        std::this_thread::sleep_for(std::chrono::duration<double>(wait_time));
+
         const auto& package = receive_ack();
 
         if (!package.has_value() || package->type() != ACK || package->seq_number() != to_send.seq_number()) {
