@@ -37,7 +37,6 @@ bool Server::process_package(const Package& package, std::optional<uint32_t>& ch
 
     checksum = Package::calculate_checksum(file_packages);
     return true;
-
 }
 
 void Server::run()
@@ -84,6 +83,7 @@ void Server::send_ack(uint32_t seq_number, uint32_t seq_total, const char* file_
 
 void Server::save_file(const std::map<uint32_t, Package>& packages)
 {
+    return;
     static size_t index = 0;
     const std::string file_name = "file_" + std::to_string(++index);
 

@@ -1,10 +1,12 @@
 #include "client.h"
 
 #include <cstdint>
+#include <mutex>
 #include <random>
 #include <algorithm>
 #include <poll.h>
 #include <iostream>
+#include <string>
 #include <thread>
 #include <chrono>
 
@@ -38,12 +40,18 @@ std::string Client::get_local_ip() {
     return std::string(IPbuffer);
 }
 
+void Client::log(const std::string& message)
+{
+    std::lock_guard<std::mutex> lock(_log_mutex);
+    std::cout << message <<std::endl;
+}
+
 bool Client::check_attempt(size_t attempt, size_t package_index, std::string filename)
 {
-    std::cout << "packages[" << package_index << "] " << "of file " << filename << " has not been delivered" << std::endl;
+    log(std::string("package[") + std::to_string(package_index) + "] of file " + std::string(filename) + std::string(" has not been delivered"));
 
     if (attempt > settings::attempts_count) {
-        std::cout << "the server didn't respond" << std::endl;
+        log("the server didn't respond");
         return false;
     }
 
@@ -63,22 +71,12 @@ bool Client::send_file(const std::string& file_path)
     size_t attempt = 0;
     size_t index = 0;
 
-    // Setting the desired bitrate in bits per second
-    const int target_bitrate = 1000000; // 1 Mbit/s
-    const size_t packet_size = settings::data_size * 8; // Packet size in bits
-
-    // Calculating the waiting time between sending packets
-    double wait_time = static_cast<double>(packet_size) / target_bitrate;
-
     while (true) {
         ++attempt;
         index = index < shuffled_packages.size() - 1 ? index + 1 : 0;
 
         const auto& to_send = shuffled_packages[index];
         send_package(to_send);
-
-        // We use the delay to control the bitrate
-        std::this_thread::sleep_for(std::chrono::duration<double>(wait_time));
 
         const auto& package = receive_ack();
 
@@ -96,6 +94,38 @@ bool Client::send_file(const std::string& file_path)
     }
 
     return false;
+}
+
+std::map<std::string, bool> Client::send_files_multithread(const std::vector<std::string>& filenames)
+{
+    std::vector<std::thread> send_files_threads;
+    std::map<std::string, bool> result;
+
+    for (const auto& filename : filenames) {
+        const auto& send_file_action = [&result, filename, this]() {
+            result[filename] = send_file(filename);
+        };
+    
+        std::thread send_file_thread(send_file_action);
+        send_files_threads.push_back(std::move(send_file_thread));
+    }
+
+    for (auto& thread : send_files_threads) {
+        thread.join();
+    }
+
+    return result;
+}
+
+std::map<std::string, bool> Client::send_files_singlethread(const std::vector<std::string>& filenames)
+{
+    std::map<std::string, bool> result;
+
+    for (const auto& filename : filenames) {
+        result[filename] = send_file(filename);
+    }
+
+    return result;
 }
 
 bool Client::send_multiple_files(const std::vector<std::string>& filenames)
@@ -139,9 +169,9 @@ bool Client::send_multiple_files(const std::vector<std::string>& filenames)
         if (package->seq_total() == to_send.seq_total()) {
             bool result = check_final_ack(id_to_checksums[package->id()], package.value());
             if (result) {
-                std::cout << "File has been delivered" << std::endl;
+                log("File has been delivered");
             } else {
-                 std::cout << "File has not been delivered" << std::endl;
+                log("File has not been delivered");
             }
             id_to_checksums.erase(package->id());
         }
@@ -213,6 +243,7 @@ std::vector<Package> Client::shuffle_and_duplicate(const std::vector<Package>& p
 
 void Client::send_package(const Package& package)
 {
+    std::lock_guard<std::mutex> lock(_send_mutex);
     sendto(_sockfd, &package, sizeof(package), 0, (sockaddr*)&_server_addr, sizeof(_server_addr));
 }
 
@@ -221,12 +252,9 @@ std::optional<Package> Client::receive_ack()
     char ack_buffer[settings::package_size];
     socklen_t addr_len = sizeof(_server_addr);
 
-    pollfd pfd = {.fd = _sockfd, .events = POLLIN, .revents = POLLNVAL };
-    if (poll(&pfd, 1, settings::timeout) <= 0) {
-        return std::nullopt;
-    }
-
+    std::unique_lock<std::mutex> lock(_receive_mutex);
     int bytes_received = recvfrom(_sockfd, ack_buffer, settings::package_size, 0, (sockaddr*)&_server_addr, &addr_len);
+    lock.unlock();
     if (bytes_received > 0) {
         Package ack_package;
         std::memcpy(&ack_package, ack_buffer, sizeof(ack_package));
@@ -265,34 +293,37 @@ std::vector<std::string> get_filenames(const std::string& filename) {
 }
 
 int main(int argc, char *argv[]) {
+    bool multithread = false;
 
-    if (argc != 2) {
-        std::cerr << "Usage: " << argv[0] << " <file_path to filenames file>\n";
+    if (argc == 3 && std::string(argv[2]) == "-m") {
+        multithread = true;
+    } else if (argc != 2) {
+        std::cerr << "Usage: " << argv[0] << "<file_path to filenames file> [-m]\n";
         return 1;
     }
 
-    const char* file_path = argv[1];
-
-    const auto& filenames = get_filenames(file_path);
+    const auto& filenames = get_filenames(argv[1]);
     if (filenames.empty()) {
         return 0;
     }
 
     Client client{};
 
-    for (const auto& filename : filenames) {
-        bool result = client.send_file(filename);
-
-        if (result) {
-            std::cout << "File " << filename << " sent successfully" << std::endl;
-        } else {
-            std::cout << "Failed to sent file " << filename << std::endl;
-        }
+    std::map<std::string, bool> result;
+    
+    if (multithread) {
+        result = client.send_files_multithread(filenames);
+    } else {
+        result = client.send_files_singlethread(filenames);
     }
 
-    //try send multiple files
-
-    client.send_multiple_files(filenames);
+    for (const auto& [filename, send_result] : result) {
+        if (!send_result) {
+            std::cerr << "Could not send file: " << filename << std::endl;
+        } else {
+            std::cout << "File " << filename << " successfully sent" << std::endl;
+        }
+    }
 
     return 0;
 }

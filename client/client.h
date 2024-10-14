@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <optional>
+#include <mutex>
 
 #include "../package.h"
 #include "../settings.h"
@@ -15,11 +16,16 @@ public:
     Client();
     ~Client() { close(_sockfd); }
 
-    bool send_file(const std::string& file_path);
-    bool send_multiple_files(const std::vector<std::string>& filenames);
+    std::map<std::string, bool> send_files_multithread(const std::vector<std::string>& filenames);
+    std::map<std::string, bool> send_files_singlethread(const std::vector<std::string>& filenames);
+
     static std::string get_local_ip();
 
 private:
+    void log(const std::string& message);
+    bool send_file(const std::string& file_path);
+    [[deprecated]]bool send_multiple_files(const std::vector<std::string>& filenames);
+
     std::vector<std::string> get_filenames(const std::string& filename);
 
     std::vector<Package> create_packages(const std::string& file_path);
@@ -33,6 +39,10 @@ private:
     std::string _server_ip;
     int _sockfd;
     sockaddr_in _server_addr{};
+
+    std::mutex _send_mutex;
+    std::mutex _receive_mutex;
+    std::mutex _log_mutex;
 
 };
 
